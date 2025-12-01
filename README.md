@@ -153,7 +153,6 @@ make install MOUNT_POINT=/media/your-sd-card API_PATH=/path/to/distingNT_API
 - **Original Tides 2**: Émilie Gillet / Mutable Instruments
 - **Disting NT Port**: Claude / Anthropic
 - **Disting NT API**: Expert Sleepers
-- **Andrew Kuttor
 
 ## License
 

@@ -420,44 +420,48 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
     );
     
     // Write outputs
+    // Output scaling: Tides DSP outputs ~0-1 unipolar or ~±1 bipolar
+    // Disting NT uses voltage directly (1.0 = 1V), so scale for ~±5V range
+    const float outputScale = 5.0f;
+    
     if (out1Bus) {
         float* out = busFrames + (out1Bus - 1) * numFrames;
         if (out1Replace) {
             for (int i = 0; i < numFrames; ++i)
-                out[i] = pThis->output_buffer[i].channel[0];
+                out[i] = pThis->output_buffer[i].channel[0] * outputScale;
         } else {
             for (int i = 0; i < numFrames; ++i)
-                out[i] += pThis->output_buffer[i].channel[0];
+                out[i] += pThis->output_buffer[i].channel[0] * outputScale;
         }
     }
     if (out2Bus) {
         float* out = busFrames + (out2Bus - 1) * numFrames;
         if (out2Replace) {
             for (int i = 0; i < numFrames; ++i)
-                out[i] = pThis->output_buffer[i].channel[1];
+                out[i] = pThis->output_buffer[i].channel[1] * outputScale;
         } else {
             for (int i = 0; i < numFrames; ++i)
-                out[i] += pThis->output_buffer[i].channel[1];
+                out[i] += pThis->output_buffer[i].channel[1] * outputScale;
         }
     }
     if (out3Bus) {
         float* out = busFrames + (out3Bus - 1) * numFrames;
         if (out3Replace) {
             for (int i = 0; i < numFrames; ++i)
-                out[i] = pThis->output_buffer[i].channel[2];
+                out[i] = pThis->output_buffer[i].channel[2] * outputScale;
         } else {
             for (int i = 0; i < numFrames; ++i)
-                out[i] += pThis->output_buffer[i].channel[2];
+                out[i] += pThis->output_buffer[i].channel[2] * outputScale;
         }
     }
     if (out4Bus) {
         float* out = busFrames + (out4Bus - 1) * numFrames;
         if (out4Replace) {
             for (int i = 0; i < numFrames; ++i)
-                out[i] = pThis->output_buffer[i].channel[3];
+                out[i] = pThis->output_buffer[i].channel[3] * outputScale;
         } else {
             for (int i = 0; i < numFrames; ++i)
-                out[i] += pThis->output_buffer[i].channel[3];
+                out[i] += pThis->output_buffer[i].channel[3] * outputScale;
         }
     }
 }
