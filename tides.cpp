@@ -40,6 +40,9 @@ struct _TidesAlgorithm : public _NT_algorithm
     // Previous output mode for reset detection
     int prev_output_mode;
     
+    // Auto-trigger state for Cycle mode
+    bool initial_trigger_sent;
+    
     // Cached derived values
     float cached_frequency;
     float cached_shape;
@@ -123,12 +126,12 @@ static const _NT_parameter parameters[] = {
     { .name = "Range", .min = 0, .max = 2, .def = 1, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = rangeNames },
     { .name = "Output Mode", .min = 0, .max = 3, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = outputModeNames },
     
-    // Main parameters (page 4)
+    // Main parameters (page 4) - use 0-1000 with scaling for smooth control
     { .name = "Frequency", .min = -500, .max = 500, .def = 0, .unit = kNT_unitNone, .scaling = kNT_scaling100, .enumStrings = NULL },
-    { .name = "Shape", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
-    { .name = "Slope", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
-    { .name = "Smoothness", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
-    { .name = "Shift", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+    { .name = "Shape", .min = 0, .max = 1000, .def = 500, .unit = kNT_unitPercent, .scaling = kNT_scaling10, .enumStrings = NULL },
+    { .name = "Slope", .min = 0, .max = 1000, .def = 500, .unit = kNT_unitPercent, .scaling = kNT_scaling10, .enumStrings = NULL },
+    { .name = "Smoothness", .min = 0, .max = 1000, .def = 500, .unit = kNT_unitPercent, .scaling = kNT_scaling10, .enumStrings = NULL },
+    { .name = "Shift", .min = 0, .max = 1000, .def = 500, .unit = kNT_unitPercent, .scaling = kNT_scaling10, .enumStrings = NULL },
     
     // Modulation attenuverters (page 5)
     { .name = "FM Amount", .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
@@ -240,6 +243,7 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
     alg->clock_counter = 0;
     alg->clock_synced = false;
     alg->prev_output_mode = -1;
+    alg->initial_trigger_sent = false;
     
     alg->cached_frequency = 1.0f;
     alg->cached_shape = 0.5f;
@@ -260,16 +264,20 @@ void parameterChanged(_NT_algorithm* self, int p)
     
     switch (p) {
         case kParam_Shape:
-            pThis->cached_shape = pThis->v[kParam_Shape] / 100.0f;
+            pThis->cached_shape = pThis->v[kParam_Shape] / 1000.0f;
             break;
         case kParam_Slope:
-            pThis->cached_slope = pThis->v[kParam_Slope] / 100.0f;
+            pThis->cached_slope = pThis->v[kParam_Slope] / 1000.0f;
             break;
         case kParam_Smoothness:
-            pThis->cached_smooth = pThis->v[kParam_Smoothness] / 100.0f;
+            pThis->cached_smooth = pThis->v[kParam_Smoothness] / 1000.0f;
             break;
         case kParam_Shift:
-            pThis->cached_shift = pThis->v[kParam_Shift] / 100.0f;
+            pThis->cached_shift = pThis->v[kParam_Shift] / 1000.0f;
+            break;
+        case kParam_RampMode:
+            // Reset auto-trigger when mode changes so Cycle will re-trigger
+            pThis->initial_trigger_sent = false;
             break;
         case kParam_OutputMode:
             // Reset DSP when output mode changes
@@ -335,6 +343,7 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
         tides::GateFlags flags = tides::GATE_FLAG_LOW;
         
         if (trigIn) {
+            // External trigger connected - use it
             bool trig_high = trigIn[i] > 1.0f;
             if (trig_high && !pThis->prev_trig_high) {
                 flags = static_cast<tides::GateFlags>(flags | tides::GATE_FLAG_RISING);
@@ -343,6 +352,17 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
                 flags = static_cast<tides::GateFlags>(flags | tides::GATE_FLAG_HIGH);
             }
             pThis->prev_trig_high = trig_high;
+        } else if (ramp_mode == tides::RAMP_MODE_LOOPING) {
+            // Cycle mode with no external trigger - auto-trigger to start free-running
+            if (!pThis->initial_trigger_sent) {
+                // Send rising edge on first sample to kickstart oscillator
+                if (i == 0) {
+                    flags = static_cast<tides::GateFlags>(tides::GATE_FLAG_HIGH | tides::GATE_FLAG_RISING);
+                    pThis->initial_trigger_sent = true;
+                }
+            }
+            // Keep gate high so it keeps cycling
+            flags = static_cast<tides::GateFlags>(flags | tides::GATE_FLAG_HIGH);
         }
         
         pThis->gate_buffer[i] = flags;
@@ -384,7 +404,20 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
     float base_freq = kFrequencyBase[range_idx] * pThis->inv_sample_rate;
     float frequency = base_freq * SemitonesToRatio(transposition);
     
-    // Apply CV modulation to parameters
+    // Smooth parameters toward target values (one-pole lowpass)
+    // This prevents zipper noise from stepped parameter changes
+    const float smoothingCoeff = 0.02f;  // ~20ms smoothing at 48kHz buffer rate
+    float target_shape = pThis->v[kParam_Shape] / 1000.0f;
+    float target_slope = pThis->v[kParam_Slope] / 1000.0f;
+    float target_smooth = pThis->v[kParam_Smoothness] / 1000.0f;
+    float target_shift = pThis->v[kParam_Shift] / 1000.0f;
+    
+    pThis->cached_shape += smoothingCoeff * (target_shape - pThis->cached_shape);
+    pThis->cached_slope += smoothingCoeff * (target_slope - pThis->cached_slope);
+    pThis->cached_smooth += smoothingCoeff * (target_smooth - pThis->cached_smooth);
+    pThis->cached_shift += smoothingCoeff * (target_shift - pThis->cached_shift);
+    
+    // Apply CV modulation to smoothed parameters
     float shape = pThis->cached_shape;
     float slope = pThis->cached_slope;
     float smoothness = pThis->cached_smooth;
